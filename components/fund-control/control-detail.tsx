@@ -30,6 +30,7 @@ interface ControlDetailProps {
   control: Control
   liveSteps?: any[]
   assetId?: string
+  onRerun?: (code: string) => void
 }
 
 const AGENT_STYLES: Record<string, { bg: string; text: string; icon: string }> = {
@@ -97,7 +98,7 @@ function cleanMarkdown(text: string): string {
     .trim()
 }
 
-function AIControlDetail({ control, liveSteps, assetId }: { control: Control; liveSteps?: any[]; assetId?: string }) {
+function AIControlDetail({ control, liveSteps, assetId, onRerun }: { control: Control; liveSteps?: any[]; assetId?: string; onRerun?: (code: string) => void }) {
   const details = control.details!
   // Parsed control steps (structured table) or legacy agent steps
   const controlSteps = details.controlSteps || []
@@ -292,7 +293,7 @@ function AIControlDetail({ control, liveSteps, assetId }: { control: Control; li
               <Mail className="h-4 w-4" />
               Request correction
             </Button>
-            <Button variant="outline" className="gap-2">
+            <Button variant="outline" className="gap-2" onClick={() => onRerun?.(control.code)} disabled={!onRerun}>
               <RotateCcw className="h-4 w-4" />
               Re-run control
             </Button>
@@ -403,10 +404,10 @@ function ManualControlDetail({ control }: { control: Control }) {
   )
 }
 
-export function ControlDetail({ control, liveSteps, assetId }: ControlDetailProps) {
+export function ControlDetail({ control, liveSteps, assetId, onRerun }: ControlDetailProps) {
   // AI control with results or live streaming
   if (control.type === "ai" && (control.details || liveSteps)) {
-    return <AIControlDetail control={{ ...control, details: control.details || { agentComment: "", sources: [] } }} liveSteps={liveSteps} assetId={assetId} />
+    return <AIControlDetail control={{ ...control, details: control.details || { agentComment: "", sources: [] } }} liveSteps={liveSteps} assetId={assetId} onRerun={onRerun} />
   }
   // AI control not yet executed
   if (control.type === "ai") {

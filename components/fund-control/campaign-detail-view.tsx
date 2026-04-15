@@ -111,14 +111,15 @@ export function CampaignDetailView({ campaignId, assetId, onNavigate }: Campaign
   const [groupConclusion, setGroupConclusion] = useState<{ groupName: string; conclusion: string } | null>(null)
   const [groupResults, setGroupResults] = useState<Record<number, { status: string; conclusion: string }>>({})
   const [lastRunResult, setLastRunResult] = useState<{ totalFindings: number; controls: Record<string, string>; runNumber?: number } | null>(null)
+  const [uploadQueue, setUploadQueue] = useState<{ name: string; status: "pending" | "uploading" | "classifying" | "done" | "error" }[]>([])
 
   // Fetch controls from API when an asset is selected
   const loadControls = (assetId: string) => {
-    fetch(`http://localhost:8000/api/assets/${assetId}/controls`)
+    fetch(`http://localhost:8000/api/assets/${assetId}/controls?campaign_id=${campaignId}`)
       .then((r) => r.json())
       .then((data: Control[]) => {
         setControls(data)
-        setSelectedControl(data[0] || null)
+        setSelectedControl(prev => prev ? (data.find(c => c.code === prev.code) || data[0] || null) : (data[0] || null))
       })
       .catch(console.error)
   }
@@ -315,11 +316,21 @@ export function CampaignDetailView({ campaignId, assetId, onNavigate }: Campaign
               </Button>
               <input ref={fileInputRef} type="file" className="hidden" multiple accept=".pdf,.xlsx,.xls" onChange={async (e) => {
                 const files = Array.from(e.target.files || [])
-                for (const file of files) {
+                setUploadQueue(files.map(f => ({ name: f.name, status: "pending" })))
+                for (let i = 0; i < files.length; i++) {
+                  const file = files[i]
+                  setUploadQueue(q => q.map((x, idx) => idx === i ? { ...x, status: "uploading" } : x))
                   const fd = new FormData(); fd.append("file", file); fd.append("doc_type", "auto"); fd.append("campaign_id", campaignId)
-                  await fetch(`http://localhost:8000/api/assets/${selectedAsset.id}/upload`, { method: "POST", body: fd })
+                  try {
+                    setUploadQueue(q => q.map((x, idx) => idx === i ? { ...x, status: "classifying" } : x))
+                    await fetch(`http://localhost:8000/api/assets/${selectedAsset.id}/upload`, { method: "POST", body: fd })
+                    setUploadQueue(q => q.map((x, idx) => idx === i ? { ...x, status: "done" } : x))
+                  } catch {
+                    setUploadQueue(q => q.map((x, idx) => idx === i ? { ...x, status: "error" } : x))
+                  }
+                  loadDocs(selectedAsset.id)
                 }
-                loadDocs(selectedAsset.id)
+                setTimeout(() => setUploadQueue([]), 3000)
                 e.target.value = ""
               }} />
               <Button className="gap-2" onClick={handleRunControls} disabled={running}>
@@ -432,14 +443,14 @@ export function CampaignDetailView({ campaignId, assetId, onNavigate }: Campaign
                             <span className="text-xs truncate">{gc.name}</span>
                             {!running && ctrl && (
                               <button
-                                className={cn("ml-auto p-1 rounded hover:bg-accent/20", isSelected ? "opacity-100" : "opacity-0 group-hover/ctrl:opacity-100")}
+                                className="ml-auto p-1 rounded hover:bg-accent/20"
                                 title={`Run ${gc.code}`}
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   if (selectedAsset) startSSE(`http://localhost:8000/api/assets/${selectedAsset.id}/rerun-stream?campaign_id=${campaignId}&control_code=${gc.code}`)
                                 }}
                               >
-                                <Play className="h-2.5 w-2.5 text-accent" />
+                                <Play className="h-3 w-3 text-accent" />
                               </button>
                             )}
                           </div>
@@ -457,6 +468,36 @@ export function CampaignDetailView({ campaignId, assetId, onNavigate }: Campaign
 
           {/* ═══ MAIN — Files bar + Control Detail ═══ */}
           <div className="flex-1 flex flex-col overflow-hidden">
+            {/* Upload progress */}
+            {uploadQueue.length > 0 && (
+              <div className="border-b border-border bg-blue-50 px-6 py-2.5 shrink-0">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <Loader2 className="h-3.5 w-3.5 text-blue-600 animate-spin" />
+                  <span className="text-xs font-semibold text-blue-900">
+                    Importing {uploadQueue.filter(f => f.status === "done").length}/{uploadQueue.length} files
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {uploadQueue.map((f, i) => (
+                    <span key={i} className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-[11px] border ${
+                      f.status === "done" ? "bg-emerald-50 border-emerald-200 text-emerald-800" :
+                      f.status === "error" ? "bg-red-50 border-red-200 text-red-800" :
+                      f.status === "pending" ? "bg-white border-border text-muted-foreground" :
+                      "bg-blue-100 border-blue-300 text-blue-900"
+                    }`}>
+                      {f.status === "done" ? "✓" :
+                       f.status === "error" ? "✕" :
+                       f.status === "pending" ? "○" :
+                       <Loader2 className="h-3 w-3 animate-spin" />}
+                      {f.name}
+                      {f.status === "uploading" && " — uploading…"}
+                      {f.status === "classifying" && " — classifying (LLM)…"}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Files bar */}
             <div className="border-b border-border bg-muted/20 px-6 py-3 shrink-0">
               <div className="flex items-center gap-2 mb-1.5">
@@ -492,7 +533,7 @@ export function CampaignDetailView({ campaignId, assetId, onNavigate }: Campaign
               )}
 
               {selectedControl ? (
-                <ControlDetail control={selectedControl} liveSteps={running ? liveSteps[selectedControl.code] : undefined} assetId={selectedAsset.id} />
+                <ControlDetail control={selectedControl} liveSteps={running ? liveSteps[selectedControl.code] : undefined} assetId={selectedAsset.id} onRerun={(code) => startSSE(`http://localhost:8000/api/assets/${selectedAsset.id}/rerun-stream?campaign_id=${campaignId}&control_code=${code}`)} />
               ) : groupConclusion ? (
                 <GroupConclusionView
                   groupConclusion={groupConclusion}
